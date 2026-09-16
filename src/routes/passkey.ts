@@ -1,12 +1,7 @@
 import { Router } from "express";
 import type { Dependencies } from "../dependencies.ts";
 import { isoBase64URL } from "@simplewebauthn/server/helpers";
-import {
-  hasRecentAuthentication,
-  requireAuth,
-  requireRecentAuth,
-  safeReturnTo,
-} from "../auth/accessControl.ts";
+import { hasRecentAuthentication, requireAuth, requireRecentAuth, safeReturnTo } from "../auth/accessControl.ts";
 import { setSessionCookie } from "../auth/sessionCookies.ts";
 import { createSession, getCurrentSession } from "../auth/sessions.ts";
 import {
@@ -26,17 +21,14 @@ import {
   storePasskeyCredential,
   updatePasskeyCounter,
   verifyRegistrationResponse,
+  verifyAuthenticationResponse,
 } from "../auth/passkeys.ts";
 import { findUserById } from "../auth/users.ts";
-import {
-  renderPasskeyLoginPage,
-  renderPasskeyManagePage,
-} from "../views/passkey.ts";
+import { renderPasskeyLoginPage, renderPasskeyManagePage } from "../views/passkey.ts";
 import { sendErrorPage } from "../errors.ts";
 import { logEvent } from "../logger.ts";
 
-type AuthenticationResponseVerifier =
-  typeof import("../auth/passkeys.ts").verifyAuthenticationResponse;
+type AuthenticationResponseVerifier = typeof import("../auth/passkeys.ts").verifyAuthenticationResponse;
 
 export function createPasskeyRouter(deps: Dependencies): Router {
   const { db } = deps;
@@ -63,55 +55,36 @@ export function createPasskeyRouter(deps: Dependencies): Router {
   });
 
   router.post("/auth/passkey", async (req, res) => {
-    const {
-      challengeId,
-      returnTo: rawReturnTo,
-      ...assertionBody
-    } = req.body as Record<string, unknown>;
+    const { challengeId, returnTo: rawReturnTo, ...assertionBody } = req.body as Record<string, unknown>;
     const returnTo = safeReturnTo(rawReturnTo);
 
     const stored = consumeChallenge(db, String(challengeId ?? ""));
     if (!stored) {
-      res
-        .status(400)
-        .type("html")
-        .send(
-          renderPasskeyLoginPage("Challenge expired. Try again.", returnTo),
-        );
+      res.status(400).type("html").send(renderPasskeyLoginPage("Challenge expired. Try again.", returnTo));
       return;
     }
 
-    const credentialId =
-      typeof assertionBody.id === "string" ? assertionBody.id : undefined;
+    const credentialId = typeof assertionBody.id === "string" ? assertionBody.id : undefined;
     if (!credentialId) {
-      res
-        .status(400)
-        .type("html")
-        .send(renderPasskeyLoginPage("Invalid passkey response.", returnTo));
+      res.status(400).type("html").send(renderPasskeyLoginPage("Invalid passkey response.", returnTo));
       return;
     }
 
     const credential = findPasskeyByCredentialId(db, credentialId);
     if (!credential) {
-      res
-        .status(401)
-        .type("html")
-        .send(renderPasskeyLoginPage("Passkey not recognised.", returnTo));
+      res.status(401).type("html").send(renderPasskeyLoginPage("Passkey not recognised.", returnTo));
       return;
     }
 
     const passkeyVerificationInput = {
-      response:
-        assertionBody as unknown as Parameters<AuthenticationResponseVerifier>[0]["response"],
+      response: assertionBody as unknown as Parameters<AuthenticationResponseVerifier>[0]["response"],
       credential: {
         id: credential.credential_id,
         publicKey: isoBase64URL.toBuffer(credential.public_key),
         counter: credential.counter,
         ...(credential.transports
           ? {
-              transports: JSON.parse(
-                credential.transports,
-              ) as AuthenticatorTransport[],
+              transports: JSON.parse(credential.transports) as AuthenticatorTransport[],
             }
           : {}),
       },
@@ -119,42 +92,31 @@ export function createPasskeyRouter(deps: Dependencies): Router {
 
     let verification;
     try {
-      verification = {
-        verified: false,
-        authenticationInfo: {
-          newCounter: passkeyVerificationInput.credential.counter,
-        },
-      };
+      verification = await verifyAuthenticationResponse({
+        response: passkeyVerificationInput.response,
+        expectedChallenge: stored.challenge,
+        expectedOrigin: rpOrigin,
+        expectedRPID: rpID,
+        requireUserVerification: true,
+        credential: passkeyVerificationInput.credential,
+      });
     } catch (error) {
       logEvent("passkey_login_failed", { credentialId, error: String(error) });
-      res
-        .status(401)
-        .type("html")
-        .send(renderPasskeyLoginPage("Passkey verification failed.", returnTo));
+      res.status(401).type("html").send(renderPasskeyLoginPage("Passkey verification failed.", returnTo));
       return;
     }
 
     if (!verification.verified) {
       logEvent("passkey_login_failed", { credentialId });
-      res
-        .status(401)
-        .type("html")
-        .send(renderPasskeyLoginPage("Passkey verification failed.", returnTo));
+      res.status(401).type("html").send(renderPasskeyLoginPage("Passkey verification failed.", returnTo));
       return;
     }
 
-    updatePasskeyCounter(
-      db,
-      credential.credential_id,
-      verification.authenticationInfo.newCounter,
-    );
+    updatePasskeyCounter(db, credential.credential_id, verification.authenticationInfo.newCounter);
 
     const user = findUserById(db, credential.user_id);
     if (!user) {
-      res
-        .status(500)
-        .type("html")
-        .send(renderPasskeyLoginPage("User not found.", returnTo));
+      res.status(500).type("html").send(renderPasskeyLoginPage("User not found.", returnTo));
       return;
     }
 
@@ -183,9 +145,7 @@ export function createPasskeyRouter(deps: Dependencies): Router {
     }
 
     const credentials = listPasskeyCredentials(db, current.user.id);
-    res
-      .type("html")
-      .send(renderPasskeyManagePage(credentials, current.user.display_name));
+    res.type("html").send(renderPasskeyManagePage(credentials, current.user.display_name));
   });
 
   router.post("/account/passkey/begin", async (req, res) => {
@@ -195,9 +155,7 @@ export function createPasskeyRouter(deps: Dependencies): Router {
       return;
     }
     if (!hasRecentAuthentication(current)) {
-      res
-        .status(403)
-        .json({ error: "Log in again before registering a passkey" });
+      res.status(403).json({ error: "Log in again before registering a passkey" });
       return;
     }
 
@@ -217,9 +175,7 @@ export function createPasskeyRouter(deps: Dependencies): Router {
       },
       excludeCredentials: existing.map((c) => ({
         id: c.credential_id,
-        ...(c.transports
-          ? { transports: JSON.parse(c.transports) as AuthenticatorTransport[] }
-          : {}),
+        ...(c.transports ? { transports: JSON.parse(c.transports) as AuthenticatorTransport[] } : {}),
       })),
     });
 
@@ -246,10 +202,7 @@ export function createPasskeyRouter(deps: Dependencies): Router {
       return;
     }
 
-    const { challengeId, ...registrationBody } = req.body as Record<
-      string,
-      unknown
-    >;
+    const { challengeId, ...registrationBody } = req.body as Record<string, unknown>;
 
     const stored = consumeChallenge(db, String(challengeId ?? ""));
     if (!stored || stored.user_id !== current.user.id) {
@@ -269,9 +222,7 @@ export function createPasskeyRouter(deps: Dependencies): Router {
     let verification;
     try {
       verification = await verifyRegistrationResponse({
-        response: registrationBody as unknown as Parameters<
-          typeof verifyRegistrationResponse
-        >[0]["response"],
+        response: registrationBody as unknown as Parameters<typeof verifyRegistrationResponse>[0]["response"],
         expectedChallenge: stored.challenge,
         expectedOrigin: rpOrigin,
         expectedRPID: rpID,
@@ -338,12 +289,7 @@ export function createPasskeyRouter(deps: Dependencies): Router {
 
     const id = Number(req.params.id);
     if (!Number.isSafeInteger(id)) {
-      sendErrorPage(
-        res,
-        404,
-        "Passkey Not Found",
-        "We couldn't find that passkey.",
-      );
+      sendErrorPage(res, 404, "Passkey Not Found", "We couldn't find that passkey.");
       return;
     }
 

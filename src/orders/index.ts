@@ -39,12 +39,12 @@ export function createOrderFromCart(
   db: DatabaseSync,
   userId: number,
   items: CartItem[],
-  discountCents: number,
+  // discountCents: number,
   shippingDetails: ShippingDetails,
   adminNotes: string,
   keyring: Keyring | undefined,
 ): Order {
-  const totalCents = getCartTotalCents(items) - discountCents;
+  const totalCents = getCartTotalCents(items);
   const encryptedShippingDetails = encryptShippingDetails(
     shippingDetails,
     keyring,
