@@ -53,7 +53,7 @@ export function renderSearchPage(
       <p class="eyebrow">Search</p>
       <h1>Find a Friend</h1>
       ${renderSearchForm(query)}
-      <p class="search-summary">${resultSummary}</p>
+      <p class="search-summary">${escapeHtml(resultSummary)}</p>
       <ul class="products search-results">${items}</ul>
     `,
   );
@@ -109,7 +109,7 @@ function renderSearchForm(query: string = ""): string {
         <input
           name="q"
           type="search"
-          value="${query}"
+          value="${escapeHtml(query)}"
           placeholder="teddy, sloth, fox"
         >
       </label>

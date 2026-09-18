@@ -30,7 +30,10 @@ const apiCors: RequestHandler = (req, res, next) => {
   }
 
   res.setHeader("Vary", "Origin");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Methods",
+    "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+  );
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   if (req.method === "OPTIONS") {
@@ -48,7 +51,16 @@ export function createApp(deps: Dependencies): express.Express {
   app.use((_req, res, next) => {
     const cspNonce = randomBytes(16).toString("base64");
     res.locals.cspNonce = cspNonce;
-    res.set({ "X-Content-Type-Options": "nosniff" });
+
+    res.setHeader(
+      "Content-Security-Policy",
+      `default-src 'self'; script-src 'self' 'nonce-${cspNonce}'; style-src 'self'; img-src 'self' data:; frame-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'`,
+    );
+
+    res.set({
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "SAMEORIGIN",
+    });
     next();
   });
 
@@ -56,7 +68,10 @@ export function createApp(deps: Dependencies): express.Express {
     res.json({ ok: true, app: "bearly-secure" });
   });
   app.use(express.static("public"));
-  app.use("/vendor/simplewebauthn", express.static("node_modules/@simplewebauthn/browser/dist/bundle"));
+  app.use(
+    "/vendor/simplewebauthn",
+    express.static("node_modules/@simplewebauthn/browser/dist/bundle"),
+  );
 
   app.use(express.urlencoded({ extended: false }));
   app.use(express.json());
@@ -82,7 +97,12 @@ export function createApp(deps: Dependencies): express.Express {
   app.use(createStorefrontRouter(deps));
 
   app.use((_req, res) => {
-    sendErrorPage(res, 404, "Page Not Found", "We couldn't find the page you requested.");
+    sendErrorPage(
+      res,
+      404,
+      "Page Not Found",
+      "We couldn't find the page you requested.",
+    );
   });
   app.use(errorHandler);
 
