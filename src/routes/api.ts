@@ -1,9 +1,72 @@
 import { Router } from "express";
 import type { Dependencies } from "../dependencies.ts";
 import { getCurrentSession } from "../auth/sessions.ts";
-import { findOrderById, listAllOrders, listOrderItems, listOrdersForUser } from "../orders/index.ts";
-import { listAllProducts } from "../products.ts";
+import { findOrderById, listAllOrders, listOrderItems, listOrdersForUser, type Order } from "../orders/index.ts";
+import { listProducts } from "../products.ts";
 import { findApiKey } from "../auth/apiKeys.ts";
+import { DatabaseSync } from "node:sqlite";
+
+type ProductResponse = {
+  id: number;
+  name: string;
+  description: string;
+  image_path: string;
+  price_cents: number;
+};
+
+type OrderResponse = {
+  id: number;
+  status: Order["status"];
+  total_cents: number;
+  created_at: string;
+};
+
+type OrderItemResponse = {
+  product_id: number;
+  product_name: string;
+  quantity: number;
+  price_cents: number;
+};
+
+function toProductResponse(db: DatabaseSync): ProductResponse[] {
+  const products = listProducts(db)
+  const result = products.map((item) => {
+    return {
+      id: item.id,
+      name: item.name,
+      description: item.description,
+      image_path: item.image_path,
+      price_cents: item.price_cents,
+    }
+  });
+  return result;
+}
+
+function toOrderResponse(db: DatabaseSync, id: number): OrderResponse[] {
+  const orders = listOrdersForUser(db, id);
+  const result = orders.map((item) => {
+    return {
+      id: item.id,
+      status: item.status,
+      total_cents: item.total_cents,
+      created_at: item.created_at,
+    }
+  });
+  return result;
+}
+
+function toOrderItemResponse(db: DatabaseSync, id: number): OrderItemResponse[] {
+  const orderItems = listOrderItems(db, id);
+  const result = orderItems.map((item) => {
+    return {
+      product_id: item.product_id,
+      product_name: item.product_name,
+      quantity: item.quantity,
+      price_cents: item.price_cents,
+    }
+  });
+  return result;
+}
 
 export function createApiRouter(deps: Dependencies): Router {
   const { db } = deps;
@@ -16,7 +79,7 @@ export function createApiRouter(deps: Dependencies): Router {
       return;
     }
 
-    res.json({ orders: listOrdersForUser(db, current.user.id) });
+    res.json({ orders: toOrderResponse(db, current.user.id) });
   });
 
   router.get("/api/orders/:id", (req, res) => {
@@ -37,12 +100,18 @@ export function createApiRouter(deps: Dependencies): Router {
       res.status(404).json({ error: "Order not found" });
       return;
     }
+    const orderResponse = {
+      id: order.id,
+      status: order.status,
+      total_cents: order.total_cents,
+      created_at: order.created_at,
+    }
 
-    res.json({ order, items: listOrderItems(db, order.id) });
+    res.json({ order: orderResponse, items: toOrderItemResponse(db, order.id) });
   });
 
   router.get("/api/products", (_req, res) => {
-    res.json({ products: listAllProducts(db) });
+    res.json({ products: toProductResponse(db) });
   });
 
   router.get("/api/integrations/warehouse/orders", (_req, res) => {

@@ -1,4 +1,3 @@
-import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { openDatabase } from "./db/index.ts";
@@ -15,7 +14,16 @@ export type Dependencies = {
   downloadSigningKey: Buffer;
   keyring: Keyring | undefined;
   db: DatabaseSync;
+  pawPalApiKey: string;
 };
+
+function requiredEnv(env: NodeJS.ProcessEnv, key: string): string {
+  const value = env[key];
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${key}`);
+  }
+  return value;
+}
 
 function parseNonNegativeInteger(value: string, name: string): number {
   const parsed = Number(value);
@@ -41,6 +49,11 @@ export function initDependencies(
   ) {
     throw new Error("ACORN_FULFILLMENT_DELAY_MS must be a non-negative number");
   }
+  const HEX_64_REGEX = /^[0-9a-fA-F]{64}$/;
+  const dsk_env = requiredEnv(env, "DOWNLOAD_SIGNING_KEY");
+
+  if (!HEX_64_REGEX.test(dsk_env)) { throw new Error(`Missing required environment variable: DOWNLOAD_SIGNING_KEY`); }
+  const dsk = Buffer.from(dsk_env, "hex");
 
   const values = {
     appOrigin: new URL(env.APP_ORIGIN ?? "http://localhost:3000").origin,
@@ -50,8 +63,9 @@ export function initDependencies(
     maxRequestBodyBytes: 32 * 1024,
     maxUploadBytes: 1024 * 1024,
     maxPublicProductResults: 50,
-    downloadSigningKey: randomBytes(32),
+    downloadSigningKey: dsk,
     keyring: loadOptionalKeyring(env),
+    pawPalApiKey: requiredEnv(env, "PAWPAL_API_KEY")
   };
 
   return { ...values, db: openDatabase(values.databasePath) };

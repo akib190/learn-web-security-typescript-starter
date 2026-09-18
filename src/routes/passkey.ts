@@ -26,7 +26,6 @@ import {
   storePasskeyCredential,
   updatePasskeyCounter,
   verifyRegistrationResponse,
-  verifyAuthenticationResponse,
 } from "../auth/passkeys.ts";
 import { findUserById } from "../auth/users.ts";
 import {
@@ -110,10 +109,10 @@ export function createPasskeyRouter(deps: Dependencies): Router {
         counter: credential.counter,
         ...(credential.transports
           ? {
-              transports: JSON.parse(
-                credential.transports,
-              ) as AuthenticatorTransport[],
-            }
+            transports: JSON.parse(
+              credential.transports,
+            ) as AuthenticatorTransport[],
+          }
           : {}),
       },
     };
