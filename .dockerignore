@@ -1,0 +1,45 @@
+# Environment files
+.env*
+
+# Git directory
+.git/
+.gitignore
+
+# Installed dependencies
+node_modules/
+
+# Compiled output
+dist/
+build/
+
+# Coverage
+coverage/
+*.lcov
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Local databases
+*.sqlite
+*.db
+*.sqlite3
+*.sqlite*
+
+# Logs
+logs/
+*.log
+
+# Bulk-import documents
+bulk-import/*
+
+# Runtime uploads (exclude general uploads, but retain the specific tax exemption file)
+data/
+
+# Exclude List
+!package.json
+!package-lock.json
+!src/
+!public/
+!data/uploads/mystery-shack-tax-exemption.pdf
