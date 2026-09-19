@@ -1,3 +1,5 @@
+import { encrypt, decrypt, type EncryptedPayload } from "./encryption.ts";
+
 const ACTIVE_VERSION_ENV = "DATA_ENCRYPTION_ACTIVE_VERSION";
 const KEY_ENV_PREFIX = "DATA_ENCRYPTION_KEY_";
 const KEY_HEX_PATTERN = /^[0-9a-f]{64}$/i;
@@ -158,4 +160,8 @@ function decodeBase64(value: string): Buffer {
   }
 
   return decoded;
+}
+
+export function encryptWithKeyring(plaintext: Buffer, keyring: Keyring | undefined): VersionedEncryptedPayload{
+
 }

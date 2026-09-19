@@ -15,6 +15,7 @@ export type Dependencies = {
   keyring: Keyring | undefined;
   db: DatabaseSync;
   pawPalApiKey: string;
+  trustedProxyHops: number;
 };
 
 function requiredEnv(env: NodeJS.ProcessEnv, key: string): string {
@@ -54,6 +55,11 @@ export function initDependencies(
 
   if (!HEX_64_REGEX.test(dsk_env)) { throw new Error(`Missing required environment variable: DOWNLOAD_SIGNING_KEY`); }
   const dsk = Buffer.from(dsk_env, "hex");
+  const trustedProxyHops = Number(requiredEnv(env, "TRUST_PROXY_HOPS"));
+  if (trustedProxyHops <= -1) {
+    throw new Error(`TRUST_PROXY_HOPS has to be positive integer`);
+  }
+
 
   const values = {
     appOrigin: new URL(env.APP_ORIGIN ?? "http://localhost:3000").origin,
@@ -65,7 +71,8 @@ export function initDependencies(
     maxPublicProductResults: 50,
     downloadSigningKey: dsk,
     keyring: loadOptionalKeyring(env),
-    pawPalApiKey: requiredEnv(env, "PAWPAL_API_KEY")
+    pawPalApiKey: requiredEnv(env, "PAWPAL_API_KEY"),
+    trustedProxyHops: trustedProxyHops,
   };
 
   return { ...values, db: openDatabase(values.databasePath) };
