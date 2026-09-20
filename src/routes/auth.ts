@@ -1,15 +1,27 @@
 import { Router, type Request, type Response } from "express";
 import type { Dependencies } from "../dependencies.ts";
 import { safeReturnTo } from "../auth/accessControl.ts";
-import { hashPassword, MAX_PASSWORD_LENGTH, verifyPassword } from "../auth/passwords.ts";
+import {
+  hashPassword,
+  MAX_PASSWORD_LENGTH,
+  verifyPassword,
+  passwordNeedsRehash,
+} from "../auth/passwords.ts";
 import {
   createPasswordResetToken,
   findPasswordResetToken,
   validatePasswordResetToken,
   resetPasswordWithToken,
 } from "../auth/passwordResetTokens.ts";
-import { clearSessionCookie, setSessionCookie } from "../auth/sessionCookies.ts";
-import { createSession, getCurrentSession, revokeSession } from "../auth/sessions.ts";
+import {
+  clearSessionCookie,
+  setSessionCookie,
+} from "../auth/sessionCookies.ts";
+import {
+  createSession,
+  getCurrentSession,
+  revokeSession,
+} from "../auth/sessions.ts";
 import { verifyAndConsumeTotpCode } from "../auth/totp.ts";
 import {
   abandonTotpLoginChallenge,
@@ -33,6 +45,7 @@ import {
   findUserById,
   getTotpSecret,
   normalizeEmail,
+  updateUserPassword,
 } from "../auth/users.ts";
 import {
   renderLoginPage,
@@ -66,17 +79,23 @@ export function createAuthRouter(deps: Dependencies): Router {
   const router = Router();
 
   const MIN_PASSWORD_LENGTH = 8;
-  const VERIFICATION_RESTART_MESSAGE = "That verification attempt is no longer valid. Log in again.";
+  const VERIFICATION_RESTART_MESSAGE =
+    "That verification attempt is no longer valid. Log in again.";
 
   router.get("/login", (req, res) => {
     const returnTo = safeReturnTo(String(req.query.returnTo ?? "/"));
-    const error = req.query.verification === "restart" ? VERIFICATION_RESTART_MESSAGE : undefined;
+    const error =
+      req.query.verification === "restart"
+        ? VERIFICATION_RESTART_MESSAGE
+        : undefined;
     res.type("html").send(renderLoginPage(error, returnTo));
   });
 
   router.get("/login/totp", (req, res) => {
     const challengeToken = getTotpLoginChallengeToken(req.header("cookie"));
-    const challenge = challengeToken ? findTotpLoginChallenge(db, challengeToken) : undefined;
+    const challenge = challengeToken
+      ? findTotpLoginChallenge(db, challengeToken)
+      : undefined;
     const user = challenge ? findUserById(db, challenge.user_id) : undefined;
     if (!challengeToken || !challenge || !user?.has_totp) {
       if (challengeToken) {
@@ -117,7 +136,12 @@ export function createAuthRouter(deps: Dependencies): Router {
         success: false,
         failureReason: "too many recovery attempts",
       });
-      res.status(429).type("html").send(renderMfaRecoveryPage("Too many recovery attempts. Try again later."));
+      res
+        .status(429)
+        .type("html")
+        .send(
+          renderMfaRecoveryPage("Too many recovery attempts. Try again later."),
+        );
       return;
     }
 
@@ -129,8 +153,15 @@ export function createAuthRouter(deps: Dependencies): Router {
         success: false,
         failureReason: !user ? "email not found" : "password mismatch",
       });
-      res.status(401).type("html").send(renderMfaRecoveryPage("Invalid recovery details."));
+      res
+        .status(401)
+        .type("html")
+        .send(renderMfaRecoveryPage("Invalid recovery details."));
       return;
+    }
+
+    if (await passwordNeedsRehash(user.password_hash)) {
+      await updateUserPassword(db, user.id, password);
     }
 
     if (!verifyAndConsumeBackupCode(db, user.id, backupCode)) {
@@ -141,7 +172,10 @@ export function createAuthRouter(deps: Dependencies): Router {
         success: false,
         failureReason: "backup code rejected",
       });
-      res.status(401).type("html").send(renderMfaRecoveryPage("Invalid recovery details."));
+      res
+        .status(401)
+        .type("html")
+        .send(renderMfaRecoveryPage("Invalid recovery details."));
       return;
     }
 
@@ -178,7 +212,10 @@ export function createAuthRouter(deps: Dependencies): Router {
         failureReason: !user ? "email not found" : "password mismatch",
         returnTo,
       });
-      res.status(401).type("html").send(renderLoginPage("Invalid email or password", returnTo));
+      res
+        .status(401)
+        .type("html")
+        .send(renderLoginPage("Invalid email or password", returnTo));
       return;
     }
 
@@ -220,7 +257,9 @@ export function createAuthRouter(deps: Dependencies): Router {
   router.post("/login/totp", (req, res) => {
     const requestedReturnTo = safeReturnTo(String(req.body.returnTo ?? "/"));
     const challengeToken = getTotpLoginChallengeToken(req.header("cookie"));
-    const challenge = challengeToken ? findTotpLoginChallenge(db, challengeToken) : undefined;
+    const challenge = challengeToken
+      ? findTotpLoginChallenge(db, challengeToken)
+      : undefined;
     if (!challengeToken || !challenge) {
       clearTotpLoginChallengeCookie(res);
       res.redirect(verificationRestartLoginPath(requestedReturnTo));
@@ -228,7 +267,9 @@ export function createAuthRouter(deps: Dependencies): Router {
     }
 
     const user = findUserById(db, challenge.user_id);
-    const totpSecret = user ? getTotpSecret(db, user.id, deps.keyring) : undefined;
+    const totpSecret = user
+      ? getTotpSecret(db, user.id, deps.keyring)
+      : undefined;
     if (!user || !totpSecret) {
       deleteTotpLoginChallenge(db, challengeToken);
       clearTotpLoginChallengeCookie(res);
@@ -238,7 +279,10 @@ export function createAuthRouter(deps: Dependencies): Router {
 
     const mfaCode = String(req.body.mfaCode ?? "").trim();
     if (!verifyAndConsumeTotpCode(db, user.id, mfaCode, totpSecret)) {
-      const challengeExhausted = recordTotpLoginChallengeFailure(db, challengeToken);
+      const challengeExhausted = recordTotpLoginChallengeFailure(
+        db,
+        challengeToken,
+      );
       logAuthenticationEvent(req, res, "login_attempt", {
         email: user.email,
         userId: user.id,
@@ -252,7 +296,15 @@ export function createAuthRouter(deps: Dependencies): Router {
         return;
       }
 
-      res.status(401).type("html").send(renderTotpLoginPage(challenge.return_to, "Authenticator code is incorrect."));
+      res
+        .status(401)
+        .type("html")
+        .send(
+          renderTotpLoginPage(
+            challenge.return_to,
+            "Authenticator code is incorrect.",
+          ),
+        );
       return;
     }
 
@@ -284,7 +336,10 @@ export function createAuthRouter(deps: Dependencies): Router {
     const password = String(req.body.password ?? "");
 
     if (!email || !displayName || !password) {
-      res.status(400).type("html").send(renderSignupPage("All fields are required"));
+      res
+        .status(400)
+        .type("html")
+        .send(renderSignupPage("All fields are required"));
       return;
     }
 
@@ -292,7 +347,11 @@ export function createAuthRouter(deps: Dependencies): Router {
       res
         .status(400)
         .type("html")
-        .send(renderSignupPage(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`));
+        .send(
+          renderSignupPage(
+            `Password must be at least ${MIN_PASSWORD_LENGTH} characters`,
+          ),
+        );
       return;
     }
 
@@ -300,12 +359,19 @@ export function createAuthRouter(deps: Dependencies): Router {
       res
         .status(400)
         .type("html")
-        .send(renderSignupPage(`Password must not exceed ${MAX_PASSWORD_LENGTH} characters`));
+        .send(
+          renderSignupPage(
+            `Password must not exceed ${MAX_PASSWORD_LENGTH} characters`,
+          ),
+        );
       return;
     }
 
     if (findUserByEmail(db, email)) {
-      res.status(409).type("html").send(renderSignupPage("An account already exists for that email"));
+      res
+        .status(409)
+        .type("html")
+        .send(renderSignupPage("An account already exists for that email"));
       return;
     }
 
@@ -375,7 +441,12 @@ export function createAuthRouter(deps: Dependencies): Router {
     const resetToken = findPasswordResetToken(db, token);
 
     if (!resetToken || !validatePasswordResetToken(db, token)) {
-      res.status(404).type("html").send(renderPasswordResetForm(token, "Reset link not found or expired"));
+      res
+        .status(404)
+        .type("html")
+        .send(
+          renderPasswordResetForm(token, "Reset link not found or expired"),
+        );
       return;
     }
 
@@ -388,13 +459,21 @@ export function createAuthRouter(deps: Dependencies): Router {
     const resetToken = findPasswordResetToken(db, token);
 
     if (!resetToken || !validatePasswordResetToken(db, token)) {
-      res.status(404).type("html").send(renderPasswordResetForm(token, "Reset link not found or expired"));
+      res
+        .status(404)
+        .type("html")
+        .send(
+          renderPasswordResetForm(token, "Reset link not found or expired"),
+        );
       return;
     }
 
     const user = findUserById(db, resetToken.user_id);
     if (!user) {
-      res.status(404).type("html").send(renderPasswordResetForm(token, "Account not found"));
+      res
+        .status(404)
+        .type("html")
+        .send(renderPasswordResetForm(token, "Account not found"));
       return;
     }
 
@@ -402,7 +481,12 @@ export function createAuthRouter(deps: Dependencies): Router {
       res
         .status(400)
         .type("html")
-        .send(renderPasswordResetForm(token, `Password must be at least ${MIN_PASSWORD_LENGTH} characters`));
+        .send(
+          renderPasswordResetForm(
+            token,
+            `Password must be at least ${MIN_PASSWORD_LENGTH} characters`,
+          ),
+        );
       return;
     }
 
@@ -410,14 +494,28 @@ export function createAuthRouter(deps: Dependencies): Router {
       res
         .status(400)
         .type("html")
-        .send(renderPasswordResetForm(token, `Password must not exceed ${MAX_PASSWORD_LENGTH} characters`));
+        .send(
+          renderPasswordResetForm(
+            token,
+            `Password must not exceed ${MAX_PASSWORD_LENGTH} characters`,
+          ),
+        );
       return;
     }
 
-    const passwordHash = hashPassword(password);
-    const passwordResetSucceeded = resetPasswordWithToken(db, token, passwordHash);
+    const passwordHash = await hashPassword(password);
+    const passwordResetSucceeded = resetPasswordWithToken(
+      db,
+      token,
+      passwordHash,
+    );
     if (!passwordResetSucceeded) {
-      res.status(404).type("html").send(renderPasswordResetForm(token, "Reset link not found or expired"));
+      res
+        .status(404)
+        .type("html")
+        .send(
+          renderPasswordResetForm(token, "Reset link not found or expired"),
+        );
       return;
     }
 
