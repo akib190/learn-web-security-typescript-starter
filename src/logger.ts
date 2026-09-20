@@ -12,10 +12,22 @@ const REDACTED_KEYS = new Set([
   "secret",
   "adminNotes",
   "storagePath",
+  "email",
+  "shippingName",
+  "shippingAddress",
+  "shippingCity",
+  "shippingRegion",
+  "shippingPostalCode",
+  "originalName",
 ]);
 
 function redact(fields: LogFields): LogFields {
-  return Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, REDACTED_KEYS.has(key) ? "[REDACTED]" : value,]),);
+  return Object.fromEntries(
+    Object.entries(fields).map(([key, value]) => [
+      key,
+      REDACTED_KEYS.has(key) ? "[REDACTED]" : value,
+    ]),
+  );
 }
 
 export function logEvent(eventName: string, fields: LogFields = {}): void {

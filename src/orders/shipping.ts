@@ -16,15 +16,26 @@ export type ShippingDetails = {
 
 export function encryptShippingDetails(details: ShippingDetails, keyring: Keyring | undefined): string {
   const jsonShippingDetails = JSON.stringify(details);
-  const encryptedShippingPayload = encryptWithKeyring(Buffer.from(jsonShippingDetails, "hex"), keyring);
+  const encryptedShippingPayload = encryptWithKeyring(
+    Buffer.from(jsonShippingDetails),
+    keyring,
+  );
 
   return serializeEncryptedPayload(encryptedShippingPayload).toString();
 }
 
-export function decryptShippingDetails(serialized: string, _keyring: Keyring | undefined): ShippingDetails {
+export function decryptShippingDetails(
+  serialized: string,
+  keyring: Keyring | undefined,
+): ShippingDetails {
+  const deserializedPayload = deserializeEncryptedPayload(
+    Buffer.from(serialized),
+  );
+  const data = decryptWithKeyring(deserializedPayload, keyring).toString();
+
   let details: unknown;
   try {
-    details = JSON.parse(serialized);
+    details = JSON.parse(data);
   } catch {
     throw new Error("Invalid shipping details");
   }
