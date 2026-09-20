@@ -1,15 +1,27 @@
 import { Router, type Request, type Response } from "express";
 import type { Dependencies } from "../dependencies.ts";
 import { safeReturnTo } from "../auth/accessControl.ts";
-import { hashPassword, MAX_PASSWORD_LENGTH, verifyPassword, passwordNeedsRehash } from "../auth/passwords.ts";
+import {
+  hashPassword,
+  MAX_PASSWORD_LENGTH,
+  verifyPassword,
+  passwordNeedsRehash,
+} from "../auth/passwords.ts";
 import {
   createPasswordResetToken,
   findPasswordResetToken,
   validatePasswordResetToken,
   resetPasswordWithToken,
 } from "../auth/passwordResetTokens.ts";
-import { clearSessionCookie, setSessionCookie } from "../auth/sessionCookies.ts";
-import { createSession, getCurrentSession, revokeSession } from "../auth/sessions.ts";
+import {
+  clearSessionCookie,
+  setSessionCookie,
+} from "../auth/sessionCookies.ts";
+import {
+  createSession,
+  getCurrentSession,
+  revokeSession,
+} from "../auth/sessions.ts";
 import { verifyAndConsumeTotpCode } from "../auth/totp.ts";
 import {
   abandonTotpLoginChallenge,
@@ -46,6 +58,14 @@ import {
   renderTotpLoginPage as renderTotpLoginView,
 } from "../views/auth.ts";
 import { logEvent } from "../logger.ts";
+import { sendErrorPage } from "../errors.ts";
+import {
+  createRateLimiter,
+  canonicalEmailKey,
+  clientIpKey,
+} from "../security/rateLimit.ts";
+import { protectSignupFromBots } from "../security/botRisk.ts";
+import { createAuthAlertThreshold } from "../observability/authAlerts.ts";
 
 type AuthenticationLogFields = {
   success: boolean;
@@ -53,31 +73,104 @@ type AuthenticationLogFields = {
   [key: string]: unknown;
 };
 
-function logAuthenticationEvent(
-  _req: Request,
-  _res: Response,
-  eventName: "login_attempt" | "password_reset_request",
-  fields: AuthenticationLogFields,
-): void {
-  logEvent(eventName, fields);
-}
-
 export function createAuthRouter(deps: Dependencies): Router {
   const { db, appOrigin } = deps;
   const router = Router();
 
   const MIN_PASSWORD_LENGTH = 8;
-  const VERIFICATION_RESTART_MESSAGE = "That verification attempt is no longer valid. Log in again.";
+  const VERIFICATION_RESTART_MESSAGE =
+    "That verification attempt is no longer valid. Log in again.";
+
+  const handleRateLimitError = (_req: Request, res: Response) => {
+    sendErrorPage(
+      res,
+      429,
+      "Too Many Requests",
+      "Too many requests. Please try again later.",
+    );
+  };
+
+  const loginRateLimiter = createRateLimiter({
+    windowSeconds: 15 * 60,
+    max: 20,
+    onLimit: handleRateLimitError,
+  });
+
+  const accountLoginRateLimiter = createRateLimiter({
+    windowSeconds: 15 * 60,
+    max: 5,
+    key: canonicalEmailKey,
+    onLimit: handleRateLimitError,
+  });
+
+  const passwordResetRateLimiter = createRateLimiter({
+    windowSeconds: 60 * 60,
+    max: 10,
+    onLimit: handleRateLimitError,
+  });
+
+  const passwordResetAccountRateLimiter = createRateLimiter({
+    windowSeconds: 60 * 60,
+    max: 3,
+    key: canonicalEmailKey,
+    onLimit: handleRateLimitError,
+  });
+
+  const recordFailedLogin = createAuthAlertThreshold({
+    windowSeconds: 5 * 60,
+    threshold: 3,
+    signal: "failed_logins",
+  });
+
+  const recordPasswordResetRequest = createAuthAlertThreshold({
+    windowSeconds: 10 * 60,
+    threshold: 3,
+    signal: "password_reset_requests",
+  });
+
+  function logAuthenticationEvent(
+    req: Request,
+    res: Response,
+    eventName: "login_attempt" | "password_reset_request",
+    fields: AuthenticationLogFields,
+  ): void {
+    logEvent(eventName, {
+      ...fields,
+      requestId: res.locals.requestId,
+      sourceIp: clientIpKey(req),
+      userId: fields.userId ?? null,
+      outcome: fields.success ? "success" : "failure",
+    });
+
+    if (eventName === "login_attempt") {
+      if (!fields.success) {
+        recordFailedLogin(req, res.locals.requestId, fields.userId ?? null);
+      }
+    }
+
+    if (eventName === "password_reset_request") {
+      recordPasswordResetRequest(
+        req,
+        res.locals.requestId,
+        fields.userId ?? null,
+      );
+    }
+  }
 
   router.get("/login", (req, res) => {
     const returnTo = safeReturnTo(String(req.query.returnTo ?? "/"));
-    const error = req.query.verification === "restart" ? VERIFICATION_RESTART_MESSAGE : undefined;
+    const error =
+      req.query.verification === "restart"
+        ? VERIFICATION_RESTART_MESSAGE
+        : undefined;
     res.type("html").send(renderLoginPage(error, returnTo));
   });
 
   router.get("/login/totp", (req, res) => {
     const challengeToken = getTotpLoginChallengeToken(req.header("cookie"));
-    const challenge = challengeToken ? findTotpLoginChallenge(db, challengeToken) : undefined;
+    const challenge = challengeToken
+      ? findTotpLoginChallenge(db, challengeToken)
+      : undefined;
     const user = challenge ? findUserById(db, challenge.user_id) : undefined;
     if (!challengeToken || !challenge || !user?.has_totp) {
       if (challengeToken) {
@@ -118,7 +211,12 @@ export function createAuthRouter(deps: Dependencies): Router {
         success: false,
         failureReason: "too many recovery attempts",
       });
-      res.status(429).type("html").send(renderMfaRecoveryPage("Too many recovery attempts. Try again later."));
+      res
+        .status(429)
+        .type("html")
+        .send(
+          renderMfaRecoveryPage("Too many recovery attempts. Try again later."),
+        );
       return;
     }
 
@@ -130,7 +228,10 @@ export function createAuthRouter(deps: Dependencies): Router {
         success: false,
         failureReason: !user ? "email not found" : "password mismatch",
       });
-      res.status(401).type("html").send(renderMfaRecoveryPage("Invalid recovery details."));
+      res
+        .status(401)
+        .type("html")
+        .send(renderMfaRecoveryPage("Invalid recovery details."));
       return;
     }
 
@@ -146,7 +247,10 @@ export function createAuthRouter(deps: Dependencies): Router {
         success: false,
         failureReason: "backup code rejected",
       });
-      res.status(401).type("html").send(renderMfaRecoveryPage("Invalid recovery details."));
+      res
+        .status(401)
+        .type("html")
+        .send(renderMfaRecoveryPage("Invalid recovery details."));
       return;
     }
 
@@ -170,55 +274,63 @@ export function createAuthRouter(deps: Dependencies): Router {
     res.redirect("/account/totp");
   });
 
-  router.post("/login", async (req, res) => {
-    const email = normalizeEmail(String(req.body.email ?? ""));
-    const password = String(req.body.password ?? "");
-    const returnTo = safeReturnTo(String(req.body.returnTo ?? "/"));
-    const user = findUserByEmail(db, email);
+  router.post(
+    "/login",
+    loginRateLimiter,
+    accountLoginRateLimiter,
+    async (req, res) => {
+      const email = normalizeEmail(String(req.body.email ?? ""));
+      const password = String(req.body.password ?? "");
+      const returnTo = safeReturnTo(String(req.body.returnTo ?? "/"));
+      const user = findUserByEmail(db, email);
 
-    if (!user || !(await verifyPassword(password, user.password_hash))) {
+      if (!user || !(await verifyPassword(password, user.password_hash))) {
+        logAuthenticationEvent(req, res, "login_attempt", {
+          email,
+          success: false,
+          failureReason: !user ? "email not found" : "password mismatch",
+          returnTo,
+        });
+        res
+          .status(401)
+          .type("html")
+          .send(renderLoginPage("Invalid email or password", returnTo));
+        return;
+      }
+
+      const challengeToken = getTotpLoginChallengeToken(req.header("cookie"));
+      abandonTotpLoginChallenge(db, req.header("cookie"));
+
+      if (user.has_totp) {
+        const challenge = createTotpLoginChallenge(db, user.id, returnTo);
+        setTotpLoginChallengeCookie(res, challenge);
+        res.redirect("/login/totp");
+        return;
+      }
+
+      if (passwordNeedsRehash(user.password_hash)) {
+        await updateUserPassword(db, user.id, password);
+      }
+
+      const session = createSession(db, user.id);
+
       logAuthenticationEvent(req, res, "login_attempt", {
-        email,
-        success: false,
-        failureReason: !user ? "email not found" : "password mismatch",
+        email: user.email,
+        userId: user.id,
+        role: user.role,
+        success: true,
+        sessionId: session.token,
         returnTo,
       });
-      res.status(401).type("html").send(renderLoginPage("Invalid email or password", returnTo));
-      return;
-    }
 
-    const challengeToken = getTotpLoginChallengeToken(req.header("cookie"));
-    abandonTotpLoginChallenge(db, req.header("cookie"));
+      setSessionCookie(res, session);
+      if (challengeToken) {
+        clearTotpLoginChallengeCookie(res);
+      }
 
-    if (user.has_totp) {
-      const challenge = createTotpLoginChallenge(db, user.id, returnTo);
-      setTotpLoginChallengeCookie(res, challenge);
-      res.redirect("/login/totp");
-      return;
-    }
-
-    if (passwordNeedsRehash(user.password_hash)) {
-      await updateUserPassword(db, user.id, password);
-    }
-
-    const session = createSession(db, user.id);
-
-    logAuthenticationEvent(req, res, "login_attempt", {
-      email: user.email,
-      userId: user.id,
-      role: user.role,
-      success: true,
-      sessionId: session.token,
-      returnTo,
-    });
-
-    setSessionCookie(res, session);
-    if (challengeToken) {
-      clearTotpLoginChallengeCookie(res);
-    }
-
-    res.redirect(returnTo);
-  });
+      res.redirect(returnTo);
+    },
+  );
 
   router.post("/login/totp/cancel", (req, res) => {
     abandonTotpLoginChallenge(db, req.header("cookie"));
@@ -226,10 +338,12 @@ export function createAuthRouter(deps: Dependencies): Router {
     res.redirect("/login");
   });
 
-  router.post("/login/totp", (req, res) => {
+  router.post("/login/totp", loginRateLimiter, (req, res) => {
     const requestedReturnTo = safeReturnTo(String(req.body.returnTo ?? "/"));
     const challengeToken = getTotpLoginChallengeToken(req.header("cookie"));
-    const challenge = challengeToken ? findTotpLoginChallenge(db, challengeToken) : undefined;
+    const challenge = challengeToken
+      ? findTotpLoginChallenge(db, challengeToken)
+      : undefined;
     if (!challengeToken || !challenge) {
       clearTotpLoginChallengeCookie(res);
       res.redirect(verificationRestartLoginPath(requestedReturnTo));
@@ -237,7 +351,9 @@ export function createAuthRouter(deps: Dependencies): Router {
     }
 
     const user = findUserById(db, challenge.user_id);
-    const totpSecret = user ? getTotpSecret(db, user.id, deps.keyring) : undefined;
+    const totpSecret = user
+      ? getTotpSecret(db, user.id, deps.keyring)
+      : undefined;
     if (!user || !totpSecret) {
       deleteTotpLoginChallenge(db, challengeToken);
       clearTotpLoginChallengeCookie(res);
@@ -247,7 +363,10 @@ export function createAuthRouter(deps: Dependencies): Router {
 
     const mfaCode = String(req.body.mfaCode ?? "").trim();
     if (!verifyAndConsumeTotpCode(db, user.id, mfaCode, totpSecret)) {
-      const challengeExhausted = recordTotpLoginChallengeFailure(db, challengeToken);
+      const challengeExhausted = recordTotpLoginChallengeFailure(
+        db,
+        challengeToken,
+      );
       logAuthenticationEvent(req, res, "login_attempt", {
         email: user.email,
         userId: user.id,
@@ -261,7 +380,15 @@ export function createAuthRouter(deps: Dependencies): Router {
         return;
       }
 
-      res.status(401).type("html").send(renderTotpLoginPage(challenge.return_to, "Authenticator code is incorrect."));
+      res
+        .status(401)
+        .type("html")
+        .send(
+          renderTotpLoginPage(
+            challenge.return_to,
+            "Authenticator code is incorrect.",
+          ),
+        );
       return;
     }
 
@@ -282,7 +409,7 @@ export function createAuthRouter(deps: Dependencies): Router {
     res.redirect(challenge.return_to);
   });
 
-  router.post("/signup", async (req, res) => {
+  router.post("/signup", protectSignupFromBots, async (req, res) => {
     if (getCurrentSession(db, req.header("cookie"))) {
       res.redirect("/account");
       return;
@@ -293,7 +420,10 @@ export function createAuthRouter(deps: Dependencies): Router {
     const password = String(req.body.password ?? "");
 
     if (!email || !displayName || !password) {
-      res.status(400).type("html").send(renderSignupPage("All fields are required"));
+      res
+        .status(400)
+        .type("html")
+        .send(renderSignupPage("All fields are required"));
       return;
     }
 
@@ -301,7 +431,11 @@ export function createAuthRouter(deps: Dependencies): Router {
       res
         .status(400)
         .type("html")
-        .send(renderSignupPage(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`));
+        .send(
+          renderSignupPage(
+            `Password must be at least ${MIN_PASSWORD_LENGTH} characters`,
+          ),
+        );
       return;
     }
 
@@ -309,12 +443,19 @@ export function createAuthRouter(deps: Dependencies): Router {
       res
         .status(400)
         .type("html")
-        .send(renderSignupPage(`Password must not exceed ${MAX_PASSWORD_LENGTH} characters`));
+        .send(
+          renderSignupPage(
+            `Password must not exceed ${MAX_PASSWORD_LENGTH} characters`,
+          ),
+        );
       return;
     }
 
     if (findUserByEmail(db, email)) {
-      res.status(409).type("html").send(renderSignupPage("An account already exists for that email"));
+      res
+        .status(409)
+        .type("html")
+        .send(renderSignupPage("An account already exists for that email"));
       return;
     }
 
@@ -349,42 +490,54 @@ export function createAuthRouter(deps: Dependencies): Router {
     res.type("html").send(renderPasswordResetRequestPage());
   });
 
-  router.post("/password-reset", (req, res) => {
-    const email = normalizeEmail(String(req.body.email ?? ""));
-    const user = findUserByEmail(db, email);
+  router.post(
+    "/password-reset",
+    passwordResetRateLimiter,
+    passwordResetAccountRateLimiter,
+    (req, res) => {
+      const email = normalizeEmail(String(req.body.email ?? ""));
+      const user = findUserByEmail(db, email);
 
-    if (!user) {
+      if (!user) {
+        logAuthenticationEvent(req, res, "password_reset_request", {
+          email,
+          success: false,
+          failureReason: "email not found",
+        });
+        res.type("html").send(renderPasswordResetRequestConfirmationPage());
+        return;
+      }
+
+      const { token } = createPasswordResetToken(db, user.id);
+      const resetLink = `${appOrigin}/password-reset/${token}`;
+      if (new URL(appOrigin).hostname === "localhost") {
+        console.log(
+          `Bear Mail to ${email}:\nReset your password: ${resetLink}`,
+        );
+      }
+
       logAuthenticationEvent(req, res, "password_reset_request", {
-        email,
-        success: false,
-        failureReason: "email not found",
+        email: user.email,
+        userId: user.id,
+        success: true,
+        resetToken: token,
+        resetLink,
       });
       res.type("html").send(renderPasswordResetRequestConfirmationPage());
-      return;
-    }
-
-    const { token } = createPasswordResetToken(db, user.id);
-    const resetLink = `${appOrigin}/password-reset/${token}`;
-    if (new URL(appOrigin).hostname === "localhost") {
-      console.log(`Bear Mail to ${email}:\nReset your password: ${resetLink}`);
-    }
-
-    logAuthenticationEvent(req, res, "password_reset_request", {
-      email: user.email,
-      userId: user.id,
-      success: true,
-      resetToken: token,
-      resetLink,
-    });
-    res.type("html").send(renderPasswordResetRequestConfirmationPage());
-  });
+    },
+  );
 
   router.get("/password-reset/:token", (req, res) => {
     const token = String(req.params.token ?? "");
     const resetToken = findPasswordResetToken(db, token);
 
     if (!resetToken || !validatePasswordResetToken(db, token)) {
-      res.status(404).type("html").send(renderPasswordResetForm(token, "Reset link not found or expired"));
+      res
+        .status(404)
+        .type("html")
+        .send(
+          renderPasswordResetForm(token, "Reset link not found or expired"),
+        );
       return;
     }
 
@@ -397,13 +550,21 @@ export function createAuthRouter(deps: Dependencies): Router {
     const resetToken = findPasswordResetToken(db, token);
 
     if (!resetToken || !validatePasswordResetToken(db, token)) {
-      res.status(404).type("html").send(renderPasswordResetForm(token, "Reset link not found or expired"));
+      res
+        .status(404)
+        .type("html")
+        .send(
+          renderPasswordResetForm(token, "Reset link not found or expired"),
+        );
       return;
     }
 
     const user = findUserById(db, resetToken.user_id);
     if (!user) {
-      res.status(404).type("html").send(renderPasswordResetForm(token, "Account not found"));
+      res
+        .status(404)
+        .type("html")
+        .send(renderPasswordResetForm(token, "Account not found"));
       return;
     }
 
@@ -411,7 +572,12 @@ export function createAuthRouter(deps: Dependencies): Router {
       res
         .status(400)
         .type("html")
-        .send(renderPasswordResetForm(token, `Password must be at least ${MIN_PASSWORD_LENGTH} characters`));
+        .send(
+          renderPasswordResetForm(
+            token,
+            `Password must be at least ${MIN_PASSWORD_LENGTH} characters`,
+          ),
+        );
       return;
     }
 
@@ -419,14 +585,28 @@ export function createAuthRouter(deps: Dependencies): Router {
       res
         .status(400)
         .type("html")
-        .send(renderPasswordResetForm(token, `Password must not exceed ${MAX_PASSWORD_LENGTH} characters`));
+        .send(
+          renderPasswordResetForm(
+            token,
+            `Password must not exceed ${MAX_PASSWORD_LENGTH} characters`,
+          ),
+        );
       return;
     }
 
     const passwordHash = await hashPassword(password);
-    const passwordResetSucceeded = resetPasswordWithToken(db, token, passwordHash);
+    const passwordResetSucceeded = resetPasswordWithToken(
+      db,
+      token,
+      passwordHash,
+    );
     if (!passwordResetSucceeded) {
-      res.status(404).type("html").send(renderPasswordResetForm(token, "Reset link not found or expired"));
+      res
+        .status(404)
+        .type("html")
+        .send(
+          renderPasswordResetForm(token, "Reset link not found or expired"),
+        );
       return;
     }
 

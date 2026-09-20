@@ -1,5 +1,9 @@
-import { randomBytes } from "node:crypto";
-import express, { type Response } from "express";
+import { randomBytes, randomUUID } from "node:crypto";
+import express, {
+  type NextFunction,
+  type Response,
+  type Request,
+} from "express";
 import cors from "cors";
 import { validateRequestOrigin } from "./csrf.ts";
 import type { Dependencies } from "./dependencies.ts";
@@ -22,14 +26,22 @@ import { createStorefrontRouter } from "./routes/storefront.ts";
 import { createSupportRouter } from "./routes/support.ts";
 import { migrateSensitiveDataAtRest } from "./storage/migrations.ts";
 import helmet from "helmet";
-
+import { createRateLimiter } from "./security/rateLimit.ts";
+import { createLoadShedder } from "./security/loadShedding.ts";
+import { assignRequestId } from "./observability/requestId.ts";
 
 export function createApp(deps: Dependencies): express.Express {
   migrateSensitiveDataAtRest(deps.db, deps.keyring);
   const app = express();
 
-  app.set('trust proxy', deps.trustedProxyHops);
+  const loadShedder = createLoadShedder({
+    maxConcurrent: 50,
+    retryAfterSeconds: 1,
+  });
 
+  app.use(assignRequestId);
+
+  app.set("trust proxy", deps.trustedProxyHops);
   app.use((_req, res, next) => {
     const cspNonce = randomBytes(16).toString("base64");
     res.locals.cspNonce = cspNonce;
@@ -47,43 +59,86 @@ export function createApp(deps: Dependencies): express.Express {
     next();
   });
 
-  app.use(helmet({
-    contentSecurityPolicy: {
-      directives: {
-        scriptSrc: ["'self'", (_req, res) => `'nonce-${String((res as Response).locals.cspNonce)}'`],
-        styleSrc: ["'self'"],
-        frameSrc: ["'self'"],
-        upgradeInsecureRequests: null,
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          scriptSrc: [
+            "'self'",
+            (_req, res) =>
+              `'nonce-${String((res as Response).locals.cspNonce)}'`,
+          ],
+          styleSrc: ["'self'"],
+          frameSrc: ["'self'"],
+          upgradeInsecureRequests: null,
+        },
       },
-    },
-    referrerPolicy: { policy: "strict-origin-when-cross-origin" },
-    xFrameOptions: { action: "sameorigin" },
-    strictTransportSecurity: false,
-  }));
+      referrerPolicy: { policy: "strict-origin-when-cross-origin" },
+      xFrameOptions: { action: "sameorigin" },
+      strictTransportSecurity: false,
+    }),
+  );
 
-  app.use("/shipping-widget.css", helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
-  app.use("/shipping-widget.js", helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
-
+  app.use(
+    "/shipping-widget.css",
+    helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }),
+  );
+  app.use(
+    "/shipping-widget.js",
+    helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }),
+  );
 
   app.get("/health", (_req, res) => {
     res.json({ ok: true, app: "bearly-secure" });
   });
+
+  // Add this route in your Express app (e.g., in src/app.ts)
+
+  app.get("/.well-known/security.txt", (_req, res) => {
+    const expiresAt = new Date(
+      Date.now() + 180 * 24 * 60 * 60 * 1000,
+    ).toISOString();
+
+    const securityTxt = [
+      "Contact: mailto:security@bearlysecure.example",
+      "Policy: https://bearlysecure.example/security-policy",
+      `Expires: ${expiresAt}`,
+    ].join("\n");
+
+    res.type("text/plain").send(securityTxt);
+  });
+
+  app.use(createRateLimiter({ windowSeconds: 60, max: 100 }));
   app.use(express.static("public"));
   app.use(
     "/vendor/simplewebauthn",
     express.static("node_modules/@simplewebauthn/browser/dist/bundle"),
   );
 
-  app.use(express.urlencoded({ extended: false }));
-  app.use(express.json());
+  app.use(loadShedder);
+
+  app.use(
+    express.urlencoded({ extended: false, limit: deps.maxRequestBodyBytes }),
+  );
+  app.use(express.json({ limit: deps.maxRequestBodyBytes }));
   app.use(createPawPalRouter(deps));
   app.use(validateRequestOrigin(deps.appOrigin));
-  app.use("/api/products", cors({
-    origin: "*",
-    credentials: false,
-    methods: ["GET"],
-    allowedHeaders: [],
-  }));
+  app.use(
+    "/api/products",
+    createRateLimiter({
+      windowSeconds: 60,
+      max: 30,
+    }),
+  );
+  app.use(
+    "/api/products",
+    cors({
+      origin: "*",
+      credentials: false,
+      methods: ["GET"],
+      allowedHeaders: [],
+    }),
+  );
   app.use(createApiRouter(deps));
 
   app.use(createArchiveRouter(deps));

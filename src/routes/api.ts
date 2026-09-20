@@ -1,10 +1,22 @@
 import { Router } from "express";
 import type { Dependencies } from "../dependencies.ts";
 import { getCurrentSession } from "../auth/sessions.ts";
-import { findOrderById, listAllOrders, listOrderItems, listOrdersForUser, type Order } from "../orders/index.ts";
-import { listProducts } from "../products.ts";
+import {
+  findOrderById,
+  listAllOrders,
+  listOrderItems,
+  listOrdersForUser,
+  type Order,
+} from "../orders/index.ts";
+import { listPublicProducts } from "../products.ts";
 import { findApiKey } from "../auth/apiKeys.ts";
 import { DatabaseSync } from "node:sqlite";
+import {
+  sendApiKeyQuotaExhausted,
+  setApiKeyQuotaHeaders,
+  toApiKeyQuotaResponse,
+} from "./apiKeyQuota.ts";
+import { consumeApiKeyQuota } from "../auth/apiKeyUsage.ts";
 
 type ProductResponse = {
   id: number;
@@ -28,8 +40,11 @@ type OrderItemResponse = {
   price_cents: number;
 };
 
-function toProductResponse(db: DatabaseSync): ProductResponse[] {
-  const products = listProducts(db)
+function toProductResponse(
+  db: DatabaseSync,
+  maxResults: number,
+): ProductResponse[] {
+  const products = listPublicProducts(db, maxResults);
   const result = products.map((item) => {
     return {
       id: item.id,
@@ -37,7 +52,7 @@ function toProductResponse(db: DatabaseSync): ProductResponse[] {
       description: item.description,
       image_path: item.image_path,
       price_cents: item.price_cents,
-    }
+    };
   });
   return result;
 }
@@ -50,12 +65,15 @@ function toOrderResponse(db: DatabaseSync, id: number): OrderResponse[] {
       status: item.status,
       total_cents: item.total_cents,
       created_at: item.created_at,
-    }
+    };
   });
   return result;
 }
 
-function toOrderItemResponse(db: DatabaseSync, id: number): OrderItemResponse[] {
+function toOrderItemResponse(
+  db: DatabaseSync,
+  id: number,
+): OrderItemResponse[] {
   const orderItems = listOrderItems(db, id);
   const result = orderItems.map((item) => {
     return {
@@ -63,7 +81,7 @@ function toOrderItemResponse(db: DatabaseSync, id: number): OrderItemResponse[] 
       product_name: item.product_name,
       quantity: item.quantity,
       price_cents: item.price_cents,
-    }
+    };
   });
   return result;
 }
@@ -105,13 +123,16 @@ export function createApiRouter(deps: Dependencies): Router {
       status: order.status,
       total_cents: order.total_cents,
       created_at: order.created_at,
-    }
+    };
 
-    res.json({ order: orderResponse, items: toOrderItemResponse(db, order.id) });
+    res.json({
+      order: orderResponse,
+      items: toOrderItemResponse(db, order.id),
+    });
   });
 
   router.get("/api/products", (_req, res) => {
-    res.json({ products: toProductResponse(db) });
+    res.json({ products: toProductResponse(db, deps.maxPublicProductResults) });
   });
 
   router.get("/api/integrations/warehouse/orders", (_req, res) => {
@@ -132,6 +153,12 @@ export function createApiRouter(deps: Dependencies): Router {
       return;
     }
 
+    const quota = consumeApiKeyQuota(db, result.id);
+    if (!quota.allowed) {
+      sendApiKeyQuotaExhausted(res, quota);
+      return;
+    }
+
     const orders = listAllOrders(db).map((order) => ({
       id: order.id,
       status: order.status,
@@ -139,9 +166,12 @@ export function createApiRouter(deps: Dependencies): Router {
       created_at: order.created_at,
     }));
 
+    setApiKeyQuotaHeaders(res, quota);
+
     res.json({
       integration: "Warehouse Fulfillment Integration",
       orders,
+      quota: toApiKeyQuotaResponse(quota),
     });
   });
 

@@ -27,7 +27,10 @@ import {
   updateReview,
   type Review,
 } from "../reviews.ts";
-import { createUploadedFile, listUploadedFilesForUser } from "../uploads/index.ts";
+import {
+  createUploadedFile,
+  listUploadedFilesForUser,
+} from "../uploads/index.ts";
 import { createUploadMiddleware } from "../uploads/middleware.ts";
 import type { Keyring } from "../storage/keyring.ts";
 import { storeTaxDocument } from "../uploads/taxDocuments.ts";
@@ -45,7 +48,10 @@ import { verifyPassword } from "../auth/passwords.ts";
 export function createAccountRouter(deps: Dependencies): Router {
   const { db, keyring } = deps;
   const router = Router();
-  const uploadTaxDocument = createUploadMiddleware("document");
+  const uploadTaxDocument = createUploadMiddleware(
+    "document",
+    deps.maxUploadBytes,
+  );
 
   router.get("/account", (req, res) => {
     const current = requireAuth(db, req, res);
@@ -64,10 +70,19 @@ export function createAccountRouter(deps: Dependencies): Router {
     const current = requireRecentAuth(db, req, res, "/account/totp");
     if (!current) return;
     if (current.user.has_totp) {
-      res.type("html").send(renderTotpEnabledPage(current.user.display_name, current.session.csrf_token));
+      res
+        .type("html")
+        .send(
+          renderTotpEnabledPage(
+            current.user.display_name,
+            current.session.csrf_token,
+          ),
+        );
       return;
     }
-    const secret = getPendingTotpSecret(db, current.user.id, keyring) ?? startTotpEnrollment(db, current, keyring);
+    const secret =
+      getPendingTotpSecret(db, current.user.id, keyring) ??
+      startTotpEnrollment(db, current, keyring);
     const qrDataUrl = await QRCode.toDataURL(
       generateURI({
         issuer: "Bearly Secure",
@@ -75,7 +90,9 @@ export function createAccountRouter(deps: Dependencies): Router {
         secret,
       }),
     );
-    res.type("html").send(renderTotpSetupPage(current.user.display_name, secret, qrDataUrl));
+    res
+      .type("html")
+      .send(renderTotpSetupPage(current.user.display_name, secret, qrDataUrl));
   });
 
   router.post("/account/totp/confirm", async (req, res) => {
@@ -102,7 +119,14 @@ export function createAccountRouter(deps: Dependencies): Router {
       res
         .status(400)
         .type("html")
-        .send(renderTotpSetupPage(current.user.display_name, pendingSecret, qrDataUrl, "Invalid code. Try again."));
+        .send(
+          renderTotpSetupPage(
+            current.user.display_name,
+            pendingSecret,
+            qrDataUrl,
+            "Invalid code. Try again.",
+          ),
+        );
       return;
     }
     confirmTotpSecret(db, current.user.id);
@@ -111,14 +135,21 @@ export function createAccountRouter(deps: Dependencies): Router {
       userId: current.user.id,
       email: current.user.email,
     });
-    res.type("html").send(renderTotpBackupCodesPage(current.user.display_name, backupCodes));
+    res
+      .type("html")
+      .send(renderTotpBackupCodesPage(current.user.display_name, backupCodes));
   });
 
   router.post("/account/totp/disable", (req, res) => {
     const current = requireRecentAuth(db, req, res, "/account/totp");
     if (!current) return;
     if (!csrfTokensMatch(current.session.csrf_token, req.body?.csrfToken)) {
-      sendErrorPage(res, 403, "Forbidden", "Your request could not be verified.");
+      sendErrorPage(
+        res,
+        403,
+        "Forbidden",
+        "Your request could not be verified.",
+      );
       return;
     }
     if (!current.user.has_totp) {
@@ -137,7 +168,12 @@ export function createAccountRouter(deps: Dependencies): Router {
     const current = requireAuth(db, req, res);
     if (!current) return;
     if (!csrfTokensMatch(current.session.csrf_token, req.body?.csrfToken)) {
-      sendErrorPage(res, 403, "Forbidden", "Your request could not be verified.");
+      sendErrorPage(
+        res,
+        403,
+        "Forbidden",
+        "Your request could not be verified.",
+      );
       return;
     }
     const currentPassword = String(req.body.currentPassword ?? "");
@@ -148,17 +184,28 @@ export function createAccountRouter(deps: Dependencies): Router {
       res
         .status(403)
         .type("html")
-        .send(renderAccountPage(current, "Re-enter your current password to change your email."));
+        .send(
+          renderAccountPage(
+            current,
+            "Re-enter your current password to change your email.",
+          ),
+        );
       return;
     }
     const email = normalizeEmail(String(req.body.email ?? ""));
     if (!email) {
-      res.status(400).type("html").send(renderAccountPage(current, "Email is required."));
+      res
+        .status(400)
+        .type("html")
+        .send(renderAccountPage(current, "Email is required."));
       return;
     }
     const existing = findUserByEmail(db, email);
     if (existing && existing.id !== current.user.id) {
-      res.status(409).type("html").send(renderAccountPage(current, "Email is already in use."));
+      res
+        .status(409)
+        .type("html")
+        .send(renderAccountPage(current, "Email is already in use."));
       return;
     }
     updateUserEmail(db, current.user.id, email);
@@ -170,7 +217,12 @@ export function createAccountRouter(deps: Dependencies): Router {
     if (!current) return;
     res
       .type("html")
-      .send(renderTaxExemptionPage(current.user.display_name, listUploadedFilesForUser(db, current.user.id)));
+      .send(
+        renderTaxExemptionPage(
+          current.user.display_name,
+          listUploadedFilesForUser(db, current.user.id),
+        ),
+      );
   });
 
   router.post(
@@ -186,12 +238,22 @@ export function createAccountRouter(deps: Dependencies): Router {
       const current = res.locals.currentSession as CurrentSession;
       const file = req.file;
       if (!file) {
-        sendTaxUploadError(db, res, current, "Choose a PDF, JPEG, PNG, or WebP file to upload.");
+        sendTaxUploadError(
+          db,
+          res,
+          current,
+          "Choose a PDF, JPEG, PNG, or WebP file to upload.",
+        );
         return;
       }
       const storedDocument = storeTaxDocument(file.buffer, deps.keyring);
       if (!storedDocument) {
-        sendTaxUploadError(db, res, current, "Choose a valid PDF, JPEG, PNG, or WebP file.");
+        sendTaxUploadError(
+          db,
+          res,
+          current,
+          "Choose a valid PDF, JPEG, PNG, or WebP file.",
+        );
         return;
       }
       const uploadedFile = createUploadedFile(
@@ -217,7 +279,14 @@ export function createAccountRouter(deps: Dependencies): Router {
   router.get("/account/reviews", (req, res) => {
     const current = requireAuth(db, req, res);
     if (!current) return;
-    res.type("html").send(renderReviewsPage(listReviewsForUser(db, current.user.id), current.user.display_name));
+    res
+      .type("html")
+      .send(
+        renderReviewsPage(
+          listReviewsForUser(db, current.user.id),
+          current.user.display_name,
+        ),
+      );
   });
 
   router.get("/account/reviews/:id/edit", (req, res) => {
@@ -225,21 +294,39 @@ export function createAccountRouter(deps: Dependencies): Router {
     if (!current) return;
     const review = requireOwnedReview(db, req, res, current.user.id);
     if (!review) return;
-    res.type("html").send(renderReviewFormPage(review, current.session.csrf_token, current.user.display_name));
+    res
+      .type("html")
+      .send(
+        renderReviewFormPage(
+          review,
+          current.session.csrf_token,
+          current.user.display_name,
+        ),
+      );
   });
 
   router.post("/account/reviews/:id", (req, res) => {
     const current = requireAuth(db, req, res);
     if (!current) return;
     if (!csrfTokensMatch(current.session.csrf_token, req.body?.csrfToken)) {
-      sendErrorPage(res, 403, "Forbidden", "Your request could not be verified.");
+      sendErrorPage(
+        res,
+        403,
+        "Forbidden",
+        "Your request could not be verified.",
+      );
       return;
     }
     const review = requireOwnedReview(db, req, res, current.user.id);
     if (!review) return;
     const rating = Number(req.body.rating);
     const body = parseReviewBody(req.body.body);
-    if (!Number.isSafeInteger(rating) || rating < 1 || rating > 5 || body === undefined) {
+    if (
+      !Number.isSafeInteger(rating) ||
+      rating < 1 ||
+      rating > 5 ||
+      body === undefined
+    ) {
       res
         .status(400)
         .type("html")
@@ -261,7 +348,12 @@ export function createAccountRouter(deps: Dependencies): Router {
     const current = requireAuth(db, req, res);
     if (!current) return;
     if (!csrfTokensMatch(current.session.csrf_token, req.body?.csrfToken)) {
-      sendErrorPage(res, 403, "Forbidden", "Your request could not be verified.");
+      sendErrorPage(
+        res,
+        403,
+        "Forbidden",
+        "Your request could not be verified.",
+      );
       return;
     }
     const review = requireOwnedReview(db, req, res, current.user.id);
@@ -273,7 +365,11 @@ export function createAccountRouter(deps: Dependencies): Router {
   return router;
 }
 
-function startTotpEnrollment(db: DatabaseSync, current: CurrentSession, keyring: Keyring | undefined): string {
+function startTotpEnrollment(
+  db: DatabaseSync,
+  current: CurrentSession,
+  keyring: Keyring | undefined,
+): string {
   const secret = generateSecret();
   setPendingTotpSecret(db, current.user.id, secret, keyring);
   logEvent("totp_enrollment_started", {
@@ -283,22 +379,48 @@ function startTotpEnrollment(db: DatabaseSync, current: CurrentSession, keyring:
   return secret;
 }
 
-function sendTaxUploadError(db: DatabaseSync, res: Response, current: CurrentSession, message: string): void {
+function sendTaxUploadError(
+  db: DatabaseSync,
+  res: Response,
+  current: CurrentSession,
+  message: string,
+): void {
   res
     .status(400)
     .type("html")
-    .send(renderTaxExemptionPage(current.user.display_name, listUploadedFilesForUser(db, current.user.id), message));
+    .send(
+      renderTaxExemptionPage(
+        current.user.display_name,
+        listUploadedFilesForUser(db, current.user.id),
+        message,
+      ),
+    );
 }
 
-function requireOwnedReview(db: DatabaseSync, req: Request, res: Response, userId?: number): Review | undefined {
+function requireOwnedReview(
+  db: DatabaseSync,
+  req: Request,
+  res: Response,
+  userId?: number,
+): Review | undefined {
   const reviewId = Number(req.params.id);
   if (!Number.isSafeInteger(reviewId)) {
-    sendErrorPage(res, 404, "Review Not Found", "We couldn't find that review.");
+    sendErrorPage(
+      res,
+      404,
+      "Review Not Found",
+      "We couldn't find that review.",
+    );
     return undefined;
   }
   const review = findReviewById(db, reviewId);
   if (!review || (userId !== undefined && review.user_id !== userId)) {
-    sendErrorPage(res, 404, "Review Not Found", "We couldn't find that review.");
+    sendErrorPage(
+      res,
+      404,
+      "Review Not Found",
+      "We couldn't find that review.",
+    );
     return undefined;
   }
   return review;

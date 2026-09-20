@@ -19,7 +19,10 @@ import { createUploadMiddleware } from "../uploads/middleware.ts";
 export function createArchiveRouter(deps: Dependencies): Router {
   const { db } = deps;
   const router = Router();
-  const uploadTaxArchive = createUploadMiddleware("archive");
+  const uploadTaxArchive = createUploadMiddleware(
+    "archive",
+    deps.maxUploadBytes,
+  );
 
   router.get("/support/tax-exemptions/import", requireSupport, (req, res) => {
     const current = res.locals.currentSession as CurrentSession;

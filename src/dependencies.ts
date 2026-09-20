@@ -53,13 +53,16 @@ export function initDependencies(
   const HEX_64_REGEX = /^[0-9a-fA-F]{64}$/;
   const dsk_env = requiredEnv(env, "DOWNLOAD_SIGNING_KEY");
 
-  if (!HEX_64_REGEX.test(dsk_env)) { throw new Error(`Missing required environment variable: DOWNLOAD_SIGNING_KEY`); }
+  if (!HEX_64_REGEX.test(dsk_env)) {
+    throw new Error(
+      `Missing required environment variable: DOWNLOAD_SIGNING_KEY`,
+    );
+  }
   const dsk = Buffer.from(dsk_env, "hex");
   const trustedProxyHops = Number(requiredEnv(env, "TRUST_PROXY_HOPS"));
   if (trustedProxyHops <= -1) {
     throw new Error(`TRUST_PROXY_HOPS has to be positive integer`);
   }
-
 
   const values = {
     appOrigin: new URL(env.APP_ORIGIN ?? "http://localhost:3000").origin,
