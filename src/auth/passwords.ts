@@ -21,15 +21,15 @@ export async function hashPassword(password: string): Promise<string> {
   return argon2.hash(password, ARGON2ID_OPTIONS);
 }
 
-export async function passwordNeedsRehash(
+export function passwordNeedsRehash(
   passwordHash: string,
-): Promise<boolean> {
+): boolean {
   if (LEGACY_SHA256_PATTERN.test(passwordHash)) {
     return true;
   }
   if (passwordHash.startsWith("$argon2id$")) {
     try {
-      return await argon2.needsRehash(passwordHash, ARGON2ID_OPTIONS);
+      return argon2.needsRehash(passwordHash, ARGON2ID_OPTIONS);
     } catch {
       return false;
     }

@@ -9,8 +9,8 @@ COPY --from=dependencies /app/node_modules ./node_modules
 COPY package.json ./
 COPY src ./src
 COPY public ./public
-RUN mkdir -p data/uploads && mkdir -p data/bulk-tax-documents && chown -R node:node data
-COPY --chown=node:node data/uploads/mystery-shack-tax-exemption.pdf ./data/uploads/
+RUN mkdir -p data/uploads && mkdir -p data/bulk-tax-documents && mkdir -p data/fixtures && chown -R node:node data
+COPY --chown=node:node data/fixtures/mystery-shack-tax-exemption.pdf ./data/fixtures/
 
 USER node
 CMD [ "node", "src/main.ts" ]

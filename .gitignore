@@ -5,10 +5,10 @@ data/*.sqlite-shm
 data/*.sqlite-wal
 data/*.log
 data/uploads/*
-!data/uploads/mystery-shack-tax-exemption.pdf
 data/bulk-tax-documents/
 .env
 .env.local
 .env.*.local
 .env.production
 !.env.example
+!data/fixtures/mystery-shack-tax-exemption.pdf

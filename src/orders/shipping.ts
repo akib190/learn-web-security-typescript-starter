@@ -1,4 +1,10 @@
-import type { Keyring } from "../storage/keyring.ts";
+import {
+  type Keyring,
+  encryptWithKeyring,
+  serializeEncryptedPayload,
+  decryptWithKeyring,
+  deserializeEncryptedPayload,
+} from "../storage/keyring.ts";
 
 export type ShippingDetails = {
   name: string;
@@ -8,17 +14,14 @@ export type ShippingDetails = {
   postalCode: string;
 };
 
-export function encryptShippingDetails(
-  details: ShippingDetails,
-  _keyring: Keyring | undefined,
-): string {
-  return JSON.stringify(details);
+export function encryptShippingDetails(details: ShippingDetails, keyring: Keyring | undefined): string {
+  const jsonShippingDetails = JSON.stringify(details);
+  const encryptedShippingPayload = encryptWithKeyring(Buffer.from(jsonShippingDetails, "hex"), keyring);
+
+  return serializeEncryptedPayload(encryptedShippingPayload).toString();
 }
 
-export function decryptShippingDetails(
-  serialized: string,
-  _keyring: Keyring | undefined,
-): ShippingDetails {
+export function decryptShippingDetails(serialized: string, _keyring: Keyring | undefined): ShippingDetails {
   let details: unknown;
   try {
     details = JSON.parse(serialized);

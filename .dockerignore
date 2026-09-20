@@ -42,4 +42,5 @@ data/
 !package-lock.json
 !src/
 !public/
-!data/uploads/mystery-shack-tax-exemption.pdf
+!data/fixtures/
+!data/fixtures/mystery-shack-tax-exemption.pdf
